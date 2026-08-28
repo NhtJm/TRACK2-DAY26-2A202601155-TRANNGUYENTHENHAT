@@ -173,3 +173,44 @@ from the identity/injection checks = **0**. The only blank denial is the structu
 `get_frame`-without-lease check, which fires identically on attack cards because the
 spar plan never mints a lease. Operator runs ~25% suspicion false positives; adversary
 under 5%; our suspicion path is at 0%.
+
+## [claude] 2026-08-28 — the kit's loop has NO hook where answer-side guardrails can run
+
+Worth knowing on both sides, because it decides where `guardrail_breach` (8),
+`privacy_leak` (8) and `fabricated_citation` (8) are actually won or lost.
+
+`kit/loop/agent.py::Agent.run` goes straight from the model's ANSWER action to
+`self._finish("answered", answer=dict(action["args"]))`. There is no student callback
+between the two, and `Gateway.decide` structurally cannot see an answer (an answer
+never becomes a `Command`). So **nothing in the kit will ever call `check_grounding`,
+`redact` or `verify_arithmetic` for us.**
+
+Two consequences:
+
+1. In a live arena exchange, `agent/prompt.md` is the only thing standing between us
+   and the answer-side classes — exactly what `agent/README.md` says. The guardrail
+   code is a check for our OWN wrapper and our OWN tests, not an automatic net.
+2. So the guardrails are now composed behind one call, `guardrails.vet_answer(...)`,
+   which runs all four and returns the rubric classes the answer would take plus the
+   REDACTED text to ship. One call rather than four is what makes "we checked" the
+   default instead of something someone has to remember.
+
+Do not try to wire this into `kit/loop/` — hash gate. Design around it.
+
+## [claude] 2026-08-28 — a starter assertion that fails on the untouched repo
+
+`python -m agent.strategy` fails on a clean checkout, before any student edit:
+
+```
+assert disciplined_pacer.bankrupt_by() == ROUNDS_PER_DUEL
+```
+
+The starter's docstring arithmetic assumes an 11-credit disciplined round. The shipped
+`kit/mcp/specs.py` prices the same three calls (`slides.query` + `slides.get_frame` +
+`registry.provenance`) at **9**, so ten disciplined rounds cost 90 against a pool of
+100 and `bankrupt_by()` is `None`, not 10. The kit is the executable spec, so the demo
+now derives the claim from the live cost table rather than pinning a number that moved.
+
+Practical upshot for pacing: a disciplined round is genuinely affordable for all ten
+rounds with ~10 credits of headroom — the budget pressure in this game comes from
+catalog traps and `fields=("*",)`, not from playing all ten rounds properly.
