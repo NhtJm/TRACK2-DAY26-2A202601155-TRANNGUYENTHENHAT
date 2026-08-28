@@ -2,11 +2,12 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
-submissions/*.bundle
 runs/
+
+# The world artifact is ~12 MB, belongs to kit/ (which we never submit or
+# modify), and README.md says it ships from Releases deliberately uncommitted.
 kit/world/*/
 !kit/world/*.py
-*.local.json
-agent/tests_local/
-eval/tests_local/
+
+# Tooling state, not part of the submission.
 .omc/
