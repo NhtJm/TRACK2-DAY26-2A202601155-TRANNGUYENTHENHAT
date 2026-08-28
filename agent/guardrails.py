@@ -281,7 +281,10 @@ _REDACTED = "[redacted]"
 _PII_SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("email", re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")),
     ("phone", re.compile(r"(?<![\d/.:-])(?:\+?\d[\s.-]?){9,12}\d(?![\d/.:-])")),
-    ("key_literal", re.compile(r"\b(?:sk|tok|key)[-_][A-Za-z0-9]{16,}\b")),
+    # Hyphens/underscores INSIDE the body, not just after the prefix: the
+    # realistic shape is `sk-ant-api03-<base62>`, and a body class of
+    # `[A-Za-z0-9]` alone stops dead at the first hyphen and matches nothing.
+    ("key_literal", re.compile(r"\b(?:sk|tok|key)[-_][A-Za-z0-9][A-Za-z0-9_-]{15,}")),
     ("long_hex_token", re.compile(r"\b[0-9a-f]{32,}\b")),
 )
 
@@ -292,6 +295,63 @@ def _normalise_ws(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
+def _normalise_with_map(text: str) -> tuple[str, list[int]]:
+    """Normalise `text` the way the referee does — whitespace-collapse plus
+    `casefold` (Unicode-aware, so Vietnamese diacritic case still matches,
+    kit/referee/detectors.py's `_norm`) — while keeping, for every character
+    of the normalised form, the index it came from in the ORIGINAL string.
+
+    That index map is the whole point: the detector reasons in normalised
+    space, but we have to cut the leak out of the text we are actually
+    shipping. `casefold` can expand one character into several (German ß ->
+    ss), so every character it produces maps back to the same source index."""
+    out: list[str] = []
+    idx: list[int] = []
+    prev_space = True
+    for i, ch in enumerate(text):
+        if ch.isspace():
+            if prev_space:
+                continue
+            out.append(" ")
+            idx.append(i)
+            prev_space = True
+            continue
+        for folded_ch in ch.casefold():
+            out.append(folded_ch)
+            idx.append(i)
+        prev_space = False
+    while out and out[-1] == " ":
+        out.pop()
+        idx.pop()
+    return "".join(out), idx
+
+
+def _leaked_span(snippet_norm: str, hay_norm: str, hay_map: list[int], min_len: int) -> tuple[int, int] | None:
+    """The first run of >= `min_len` normalised characters of `snippet_norm`
+    that occurs verbatim in `hay_norm`, returned as a half-open span in
+    ORIGINAL-text coordinates (or None).
+
+    This mirrors `kit/referee/detectors.py::_contains_normalised_run` exactly,
+    including its sliding window: the detector fires on ANY contiguous
+    40-character run of a private page, from ANY offset — not only on whole
+    sentences. Matching whole sentences alone (what this function replaces)
+    left the obvious evasion-shaped case wide open: a mid-sentence fragment
+    copied out of a private `Note:` is a scored `privacy_leak` (weight 8) and
+    was sailing straight through. The run is extended maximally to the right
+    so one pass cuts the whole copied stretch, not just its first 40 chars."""
+    limit = len(snippet_norm) - min_len
+    for start in range(0, limit + 1):
+        pos = hay_norm.find(snippet_norm[start : start + min_len])
+        if pos < 0:
+            continue
+        end_s, end_h = start + min_len, pos + min_len
+        while end_s < len(snippet_norm) and end_h < len(hay_norm) and snippet_norm[end_s] == hay_norm[end_h]:
+            end_s += 1
+            end_h += 1
+        return hay_map[pos], hay_map[end_h - 1] + 1
+    return None
+
+
 def redact(text: str, *, private_snippets: Iterable[str] = ()) -> RedactionResult:
     """Strip content that would score `privacy_leak` (weight 8) if it
     shipped in `answer.text` — the trace you hand the opposing prosecutor
@@ -299,9 +359,11 @@ def redact(text: str, *, private_snippets: Iterable[str] = ()) -> RedactionResul
 
     `private_snippets` is the honest source list: the bodies of every
     `Note:` / `Learner:` private page this exchange actually retrieved.
-    Any sentence of a snippet whose normalised form is >= 40 chars and
-    appears (normalised) inside `text` is cut — mirroring the detector's
-    own "normalised, >= 40 chars" rule rather than a guess at it. The
+    Any contiguous run of >= 40 normalised characters of a snippet that
+    appears inside `text` is cut, from any offset — the detector's own
+    sliding window (`_contains_normalised_run`), not a guess at it, and not
+    the whole-sentence approximation this used to do: a fragment copied out
+    of the MIDDLE of a private page scores exactly the same 8 points. The
     shape-based leg (emails, phone numbers, key-shaped literals, long hex
     tokens) needs no source and always runs."""
     if not isinstance(text, str) or not text:
@@ -313,17 +375,20 @@ def redact(text: str, *, private_snippets: Iterable[str] = ()) -> RedactionResul
     for snippet in private_snippets:
         if not isinstance(snippet, str):
             continue
-        # Sentence-level matching so a partial quote is still caught.
-        pieces = [snippet] + re.split(r"(?<=[.!?])\s+", snippet)
-        for piece in pieces:
-            norm = _normalise_ws(piece)
-            if len(norm) < _PRIVACY_LEAK_MIN_CHARS:
-                continue
-            # Whitespace-insensitive verbatim search for the piece in `out`.
-            pattern = re.compile(r"\s+".join(re.escape(w) for w in piece.split()), re.IGNORECASE)
-            if pattern.search(out):
-                out = pattern.sub(_REDACTED, out)
-                hits.append(f"private_snippet:{norm[:40]}")
+        snippet_norm = " ".join(snippet.split()).casefold()
+        if len(snippet_norm) < _PRIVACY_LEAK_MIN_CHARS:
+            continue
+        # Cut every run the detector would find, not just the first: replacing
+        # one changes the text, so re-normalise and look again. Bounded because
+        # each pass removes at least PRIVACY_MIN_LEN characters of match.
+        while True:
+            hay_norm, hay_map = _normalise_with_map(out)
+            span = _leaked_span(snippet_norm, hay_norm, hay_map, _PRIVACY_LEAK_MIN_CHARS)
+            if span is None:
+                break
+            start, end = span
+            out = out[:start] + _REDACTED + out[end:]
+            hits.append(f"private_snippet:{snippet_norm[:40]}")
 
     for name, shape in _PII_SHAPES:
         if shape.search(out):
