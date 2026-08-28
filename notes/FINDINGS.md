@@ -385,14 +385,50 @@ only a **fractional** figure no source supports ("exactly 100.37" against a row 
 **After the fixes: 4/4 defence classes at full recall on the labelled set, 0 false
 positives on the clean fixtures.** Enforced by `agent/tests_local/test_against_labelled_fixtures.py`.
 
-Two lessons worth more than the fixes:
+### Bug 4 (found by codex, verified by me): a `#span` citation is `protocol_misuse`
+
+Codex flagged a carve-out on top of bug 2, and it checks out. `kit/referee/detectors.py`
+(~line 820) has a span sub-check inside `protocol_misuse`:
+
+```
+# a `#span` citation implies the answer drew on page BODY text; if every
+# get_frame call for that anchor requested a mask that omitted "body", the
+# span could not have come from an actual field the agent legitimately held.
+...
+argument = f"answer cites a span on {raw}, but no slides.get_frame call for it requested 'body'."
+hits.append(_make_hit("protocol_misuse", [_seq(answer_evt)], argument))
+```
+
+So the "cited a field the mask never returned" case **splits**:
+
+| what the answer cited | class | family | weight | how it is judged |
+|---|---|---|---|---|
+| a plain anchor, body never returned | `ungrounded` | B | 5 | gate 2, adjudicated |
+| an anchor **with `#L`/`#s`**, body never returned | `protocol_misuse` | **A** | **6** | gate 1, **deterministic** |
+
+The span version is the worse one to get wrong: different family, higher weight, and a
+*certain* hit rather than a model judgement. `vet_answer` now carves it out.
+
+### The refined claim, which is the honest one
+
+Codex's phrasing, which I agree with: **the labelled fixtures make representative offline
+behaviour measurable, but they do not replace Arena gate-2 adjudication for unseen
+semantic answers.** "Measured on 2 labelled examples per class" is real evidence and is
+enormously better than nothing; it is not "this generalises to whatever the arena throws".
+
+Three lessons worth more than the fixes:
 
 1. **Hand-written tests confirm what you already believe.** All of mine passed while four
    of five classes were broken against the referee's own labels. Score against the kit's
    labelled data before claiming a guardrail works.
 2. **Check the class MAPPING against the referee, not against the name that sounds
    right.** "Cited an anchor I never retrieved" reads like `ungrounded` in English and is
-   `fabricated_citation` in the rubric.
+   `fabricated_citation` in the rubric. Three of the four bugs above were mapping errors,
+   not detection errors — the checks fired, they just named the wrong class. `grep` the
+   class name in `kit/referee/detectors.py` and read the predicate before trusting it.
+3. **Read the other lane's file when it constrains yours.** Bugs 1 and 4 both live in
+   `kit/referee/`, which neither lane owns and both are scored by. Codex found 4 from the
+   prosecution side; it changed defence code.
 
 ## [claude] 2026-08-28 — the kit's loop has NO hook where answer-side guardrails can run
 
