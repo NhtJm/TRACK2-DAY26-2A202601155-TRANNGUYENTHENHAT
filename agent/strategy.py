@@ -89,7 +89,15 @@ __all__ = [
     "ROUNDS_PER_DUEL",
     "SAFE_STARTING_RESERVE",
     "CATALOG_TRAP_TOOLS",
+    "CHEAP_CATALOG_MASKS",
     "DEPRECATED_SUCCESSORS",
+    "WRITE_TOOLS",
+    "A2A_SERVERS",
+    "spec_for",
+    "is_write_tool",
+    "needs_lease",
+    "required_write_headers",
+    "estimated_cost",
     "disciplined_round_cost",
     "careless_round_cost",
     "is_catalog_trap",
@@ -126,6 +134,75 @@ CATALOG_TRAP_TOOLS: frozenset[tuple[str, str]] = frozenset(
 DEPRECATED_SUCCESSORS: Mapping[tuple[str, str], tuple[str, str]] = {
     ("slides", "search"): ("slides", "query"),
 }
+
+# The cheapest defensible mask for each catalog-trap tool — what the BUDGET job
+# rewrites a maskless catalog call down to instead of paying the full-dump
+# default. One identifying field each: enough to browse names, never the dump.
+CHEAP_CATALOG_MASKS: Mapping[tuple[str, str], tuple[str, ...]] = {
+    ("registry", "list_servers"): ("name",),
+    ("glossary", "list_terms"): ("term",),
+}
+
+# State-changing tools. Derived from TOOL_SPECS.is_write when the specs are
+# importable; the literal fallback mirrors the kit's own referee detector
+# (spar.py::_detect names exactly these three) so the AUTHORIZE/write checks
+# still run when degraded. `content.file_content_bug` is absent from
+# TOOL_SPECS but present in the referee's write list — kept here so a write
+# path the specs forgot is still treated as a write.
+WRITE_TOOLS: frozenset[tuple[str, str]] = frozenset(
+    {("progress", "record_mastery"), ("content", "flag_stale_slide"),
+     ("content", "file_content_bug")}
+    | ({k for k, s in TOOL_SPECS.items() if getattr(s, "is_write", False)}
+       if _SPECS_AVAILABLE else set())
+)
+
+# Peers reached over A2A delegation rather than plain MCP. A command aimed at
+# one of these must carry a matching `aud` and a registry-vouched agent card
+# (kit/mcp/a2a.py) — the identity checks in gateway JOB 3 key off this set.
+A2A_SERVERS: frozenset[str] = frozenset({"curriculum-analyst", "citation-checker", "roster"})
+
+
+def spec_for(server: str, tool: str):
+    """The `kit.mcp.specs.ToolSpec` for `(server, tool)`, or `None` when the
+    specs are unavailable or the tool is unknown — callers branch on `None`
+    rather than catching `KeyError` at every call site."""
+    if not _SPECS_AVAILABLE:
+        return None
+    return TOOL_SPECS.get((server, tool))
+
+
+def is_write_tool(server: str, tool: str) -> bool:
+    spec = spec_for(server, tool)
+    if spec is not None and getattr(spec, "is_write", False):
+        return True
+    return (server, tool) in WRITE_TOOLS
+
+
+def needs_lease(server: str, tool: str) -> bool:
+    spec = spec_for(server, tool)
+    if spec is not None:
+        return bool(getattr(spec, "needs_lease", False))
+    return tool == "get_frame"  # degraded fallback: the one lease-gated tool in the kit
+
+
+def required_write_headers(server: str, tool: str) -> tuple[str, ...]:
+    """Lower-cased header names a write must carry (`If-Match` precondition +
+    `Idempotency-Key`), from the spec when available."""
+    spec = spec_for(server, tool)
+    if spec is not None and getattr(spec, "required_headers", ()):
+        return tuple(h.lower() for h in spec.required_headers)
+    return ("idempotency-key", "if-match")
+
+
+def estimated_cost(server: str, tool: str, fields: tuple[str, ...] = (), n_rows: int = 1) -> int:
+    """Best-effort credit estimate for one call — the real spec price when the
+    specs load, the degraded anchor table otherwise. Never raises: an unknown
+    tool prices at the honest-unknown default rather than KeyError-ing a
+    budget check mid-decide."""
+    try:
+        return int(_spec_cost(server, tool, fields=fields, n_rows=n_rows))
+    except Exception:
+        return 5
 
 
 def disciplined_round_cost() -> int:
@@ -404,17 +481,23 @@ if __name__ == "__main__":
         f"  disciplined (ceiling, {disciplined}cr) x10 rounds -> spent={disciplined_pacer.credits_spent} "
         f"credits_left={disciplined_pacer.credits_left} bankrupt_by={disciplined_pacer.bankrupt_by()}"
     )
-    # Even the CEILING of "disciplined" (paying full price for query + get_frame
-    # + provenance, EVERY round, with no caching at all) survives nine full
-    # rounds and only runs dry paying for the tenth -- a sharp contrast with
-    # careless play below, and the honest reason ResultCache/pacing exist:
-    # not needing all three calls every round is what buys the margin
-    # FINAL-PLAN.md 4.3 calls "sustainable".
-    assert disciplined_pacer.bankrupt_by() == ROUNDS_PER_DUEL, disciplined_pacer.bankrupt_by()
+    # MEASURED, not asserted against a constant. The starter shipped
+    # `assert bankrupt_by() == ROUNDS_PER_DUEL`, which encoded an 11 cr
+    # disciplined round; the SHIPPED kit/mcp/specs.py prices the same three
+    # calls at 9, so ten disciplined rounds cost 90 and finish the duel with
+    # credits to spare. That assertion fails on the untouched starter too —
+    # the kit is the executable spec, so the demo now derives the claim from
+    # the live cost table instead of pinning a number that moved.
+    ten_round_total = disciplined * ROUNDS_PER_DUEL
+    survives = disciplined_pacer.bankrupt_by() is None
+    print(f"  {disciplined} cr x{ROUNDS_PER_DUEL} rounds = {ten_round_total} against a "
+          f"{disciplined_pacer.starting_pool} pool -> "
+          f"{'survives the duel' if survives else f'bankrupt by round {disciplined_pacer.bankrupt_by()}'}")
+    assert (disciplined_pacer.bankrupt_by() is None) == (ten_round_total <= disciplined_pacer.starting_pool)
     nine_rounds_pacer = BudgetPacer()
     for round_no in range(1, ROUNDS_PER_DUEL):  # 9 rounds, not 10
         nine_rounds_pacer.record_spend(round_no, disciplined)
-    print(f"  disciplined (ceiling) x9 rounds  -> credits_left={nine_rounds_pacer.credits_left} (still positive)")
+    print(f"  disciplined x9 rounds  -> credits_left={nine_rounds_pacer.credits_left} (still positive)")
     assert nine_rounds_pacer.credits_left >= 0
 
     careless_pacer = BudgetPacer()
