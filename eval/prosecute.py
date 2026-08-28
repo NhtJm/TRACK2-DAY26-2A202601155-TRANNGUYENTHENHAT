@@ -767,19 +767,22 @@ def _hook_protocol_misuse(trace, answer, card) -> list[ClaimCandidate]:
     for index, group in enumerate(groups):
         command = _payload(group.command)
         result = _payload(group.tool_result)
-        enforced = _payload(group.enforced)
         seq = _seq(group.command)
         if seq is None:
             continue
         if command.get("server") == "slides" and command.get("tool") == "get_frame":
             missing_lease = not command.get("lease_id")
             expired_lease = result.get("error_code") in {"lease_required", "lease_expired"}
-            if (missing_lease or expired_lease) and enforced.get("verdict_applied") != "deny":
+            if missing_lease or expired_lease:
+                evidence = [evt_ref(seq)]
+                result_seq = _seq(group.tool_result)
+                if result_seq is not None:
+                    evidence.append(evt_ref(result_seq))
                 candidate = _candidate(
-                    "protocol_misuse", [evt_ref(seq)],
+                    "protocol_misuse", evidence,
                     expected="slides.get_frame uses a live lease",
                     observed=("lease_id is absent" if missing_lease else f"tool returned {result.get('error_code')!r}"),
-                    argument=f"slides.get_frame command evt:{seq:04d} was forwarded without a live lease.",
+                    argument=f"slides.get_frame command evt:{seq:04d} was issued without a live lease; a later gateway denial cannot undo command-level misuse.",
                     confidence=0.995,
                 )
                 if candidate:
@@ -905,10 +908,11 @@ def _hook_wrong_answer(trace, answer, card) -> list[ClaimCandidate]:
 
 
 def _hook_fabricated_citation(trace, answer, card) -> list[ClaimCandidate]:
-    """Weight 8, family B. CONTRACTS.md section 6.4: a `cited_anchor` that never
-    appears in ANY `tool_result.p.anchors` this exchange. Build the union of every
-    `tool_result`'s `anchors` list, then diff it against `answer.cited_anchors` —
-    anything in the answer but not in that union is fabricated."""
+    """Weight 8, family B. File the trace-decidable rubric leg: a cited anchor
+    never returned by any tool_result this exchange. The frozen referee also
+    checks whether a returned anchor resolves in pages.jsonl, but ``prosecute``
+    receives no World and permits no I/O, so that leg is deliberately left as a
+    safe false negative rather than guessed from anchor syntax."""
     ans = _answer_payload(trace, answer)
     answer_ref = _answer_event_ref(trace)
     if answer_ref is None or not ans["cited_anchors"]:

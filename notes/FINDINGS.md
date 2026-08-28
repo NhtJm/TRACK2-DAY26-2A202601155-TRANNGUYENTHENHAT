@@ -85,3 +85,16 @@ Format:
   `protocol_misuse`, not the semantic `ungrounded` heuristic. It also lowered confidence to
   `0.75` when an authority claim must infer `ctx.act` from `exchange_start.defender`; explicit
   `exchange_start.act` remains `0.995`.
+
+## [codex] 2026-08-28 — referee-vs-spar protocol correction
+
+- `kit.referee.detectors.protocol_misuse` fires from the `command` event when
+  `slides.get_frame.lease_id` is falsy, even if the gateway later denies the command and no
+  `tool_call` occurs. The prior prosecution hook incorrectly suppressed this claim after a deny;
+  it now matches the frozen detector and cites the command directly. A constructed denied trace
+  produces one `protocol_misuse` in both implementations; the labelled scorer remains 34/34.
+- `fabricated_citation` has two frozen-referee legs: never returned in this trace, or does not
+  resolve in `pages.jsonl`. The prosecutor can prove and files the first. Its synchronous,
+  trace-only API receives no World, so it conservatively leaves the resolution leg as a false
+  negative rather than guessing from syntax. Spar's synthetic anchors therefore make its latent
+  count unsuitable as a prosecution precision measurement.
