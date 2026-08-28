@@ -249,6 +249,64 @@ reaches ~45-55" band.
    `protocol_misuse`.
 4. **Nothing automatically vets our answer** (see the loop-hook finding below).
 
+## [claude] 2026-08-28 — INTEGRATION: the two lanes merge clean, and the merged result
+
+Verified, not assumed. `git merge-tree lane/defense lane/prosecution` reports **exactly
+one** conflicted file — `notes/FINDINGS.md`, because both lanes append at EOF. Every
+code file merges without conflict; the disjoint-file split did its job.
+
+**Resolving this file's conflict:** delete only the three marker lines
+(`<<<<<<<`, `=======`, `>>>>>>>`). Both blocks are complete and disjoint, so nothing
+needs hand-merging — keep every `## [claude]` and `## [codex]` section verbatim. Never
+resolve by taking one side.
+
+Merged tree, real harness (`spar --as all`, seed 1), defence + prosecution together:
+
+| opponent | result |
+|---|---|
+| rookie | **100 — 0** |
+| operator | **100 — 0** |
+| adversary | **72 — 0** (a win, bot driven to zero) |
+
+`make validate` 0 failing · G-KEY PASS. Above the kit's own "a strong team reaches
+~45-55" band against adversary.
+
+Still MISSED on the merged tree vs adversary: `protocol_misuse` x3 (weight 6) — the
+family-A claim slot is going to `enforcement_failure`, so the lease-less `get_frame`
+never gets filed. ~18 weight/duel if a spare slot can ever take it.
+
+## [claude] 2026-08-28 — `make test` goes RED once the prosecution lane does its job
+
+**This is a kit defect, not a bug in either lane, and it needs a human decision.**
+
+```
+FAILED tests/test_prosecute.py::test_starter_end_to_end_against_the_full_fixture_set
+assert 0.0 < report["recall"] < 0.15   ->   assert 1.0 < 0.15
+```
+
+Reproduced on `lane/prosecution` ALONE (detached, no merge): 1 failed, 40 passed. The
+merge does not cause it.
+
+The test **pins the starter's incompleteness**. Its own comment says so — *"recall low:
+it implements exactly 1 of 17 classes"* — and it further asserts
+`per_class[cls]["claimed"] == 0` for all sixteen other classes. A recall of 1.000, which
+is precisely what the brief asks the prosecution lane to achieve, is what trips it.
+**This test fails the moment any student implements any of the 16 stub detectors.**
+Completing the assignment breaks it by construction.
+
+It is **not a submission gate**, which is what makes accepting it cheap:
+
+- `make submit` depends on `validate`, **not** on `test` (`Makefile: submit: validate`).
+- The hash gate covers `kit/**/*.py` only (`kit/submit.py::_kit_hashes` rglobs
+  `KIT_ROOT/"kit"`). `tests/` is not hashed and not bundled.
+- RULES.md section 1's forbidden list is `kit/ · bots/ · fixtures/` — `tests/` is **not**
+  on it. (Our own shared brief says treat it as read-only, which is why nothing here
+  was touched.)
+
+Recommendation: **accept it red and document it** (this entry). Do NOT lower the
+prosecutor's recall to go green — that trades real tournament damage for a green light
+on a test whose entire purpose is to prove you have not started yet.
+
 ## [claude] 2026-08-28 — the kit's loop has NO hook where answer-side guardrails can run
 
 Worth knowing on both sides, because it decides where `guardrail_breach` (8),
