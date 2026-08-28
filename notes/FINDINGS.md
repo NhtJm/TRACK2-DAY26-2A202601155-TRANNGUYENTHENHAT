@@ -579,3 +579,78 @@ now derives the claim from the live cost table rather than pinning a number that
 Practical upshot for pacing: a disciplined round is genuinely affordable for all ten
 rounds with ~10 credits of headroom — the budget pressure in this game comes from
 catalog traps and `fields=("*",)`, not from playing all ten rounds properly.
+
+---
+
+## [claude] 2026-08-28 — CURRENT STATE, superseding earlier entries. Read this first.
+
+This file is append-only, so it records the path as well as the destination — six of my
+entries above were later corrected by measurement, and a reader who stops early will act
+on a claim I have since retracted. This section is the bottom line. Where it disagrees
+with anything above it, **this wins**.
+
+### The one rule that changed everything
+
+**Do not score anything against `spar`'s report. `spar.py::_detect` is spar's private
+approximation; the arena's oracle is `kit/referee/detectors.py::detect_all` (what is
+latently there) and `kit/referee/verify.py::verify_claims` (what a filed claim actually
+resolves to).** They disagree in *both* directions, and every wrong claim in this file
+traces back to trusting the mirror. `verify.py` is titled "Gate 1, the deterministic
+claim verifier ... the REFEREE side" and `spar.py`'s own docstring says `kit/referee/` is
+"hash-synced from the arena's".
+
+### What is true about the defence lane
+
+- **Every one of the nine mutation ops is denied at the gateway**, each with a reason
+  naming the invariant: `replace_act`, `replace_aud`, `shadow_server`, `forge_card`,
+  `drop_header`, `swap_replica`, `poison_row`, `corrupt_peer_answer`, `inflate_catalog`.
+- Scored with the **frozen** `detect_all` over 300 exchanges, the gateway takes **zero**
+  `enforcement_failure`, `authority_exceeded`, `write_violation`, `stale_read` and
+  `wasteful`. The two classes that do appear are both harness-bound and neither is
+  reachable from `decide()` — see the corrections above.
+- **`Gateway.decide` cannot prevent `protocol_misuse` sub-condition 1.** The referee
+  fires it off the *command's* falsy `lease_id`, which the arena writes before `decide()`
+  is consulted. Only `agent/prompt.md` (carry a `lease=`) prevents it. We still deny, as
+  a credit optimisation, and both the code and the prompt say so in those words.
+- Answer-side guardrails score **4/4 defence classes at full recall with 0 false
+  positives** on the referee's labelled fixtures. Three bugs found there were *mapping*
+  errors, not detection errors — the checks fired and named the wrong class.
+- **Nothing in the kit calls those guardrails for us**: `Agent.run` goes straight from
+  the model's ANSWER to `_finish`. `guardrails.vet_answer()` exists for our own wrapper;
+  in a live arena exchange `prompt.md` is the live defence.
+
+### Retracted or superseded, in one line each
+
+| earlier claim | status |
+|---|---|
+| "zero `protocol_misuse` across 450 exchanges" | **wrong oracle** — the frozen referee finds it every exchange |
+| "the adjudicated classes are unmeasurable offline" | **too pessimistic** — the labelled fixtures measure them, and found 3 bugs |
+| "missed `protocol_misuse` is ~18 weight recoverable" | **wrong** — the per-family cap makes it unfileable |
+| "gate `detect_enforcement_failure` on `defense_event`" | **worse remedy** — codex normalising the deck was strictly better |
+| a cited-but-never-returned anchor is `ungrounded` | **wrong class** — it is `fabricated_citation` (8, not 5) |
+| `make test` is green | **red on the merged tree**, by design, for a reason that should not be "fixed" |
+
+### The two things a human still has to decide
+
+1. **The merge.** Both lanes are committed and the merge is proven to apply with one
+   conflict in this file, which resolves by keeping both blocks. Held because our own
+   brief says "merge to main only when `make test` is green", and it is not — for a
+   reason we agreed is correct.
+2. **`make test` staying red.** `tests/test_prosecute.py` pins the starter's
+   incompleteness (`recall < 0.15`, `claimed == 0` for sixteen classes), so it fails for
+   any team that completes the assignment. Not a submission gate: `make submit` depends
+   on `validate`, the hash gate covers `kit/**/*.py` only, and `tests/` is neither
+   bundled nor on RULES.md's forbidden list. Recommendation: accept it red, document it,
+   and never lower the prosecutor's recall to satisfy it.
+
+### The transferable lessons, for whoever reads this next
+
+1. **Verify against the executable spec, not the practice harness.** Both lanes produced
+   confidently wrong numbers by scoring against `spar`.
+2. **Hand-written tests confirm what you already believe.** All 79 of mine passed while
+   four of five guardrail classes were broken against the referee's own labels.
+3. **Check the class MAPPING, not just the detection.** Three of four guardrail bugs
+   fired correctly and named the wrong class.
+4. **Ownership governs writes, not understanding.** `kit/referee/detectors.py` is owned
+   by neither lane and scores both. Four bugs lived in the gap between "my files" and
+   "the files that judge my files"; each was found by the *other* lane reading it.
