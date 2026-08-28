@@ -108,6 +108,12 @@ resolve at gate 1 with no model — they score in spar exactly as they will in t
 `spar.py::_detect` is the referee's own implementation of both; mirroring it makes the
 claims verify. That is ~40-60 weight per duel currently left on the table.
 
+> **Partly superseded** — codex implemented both, and `fabricated_citation` now files
+> and verifies. `protocol_misuse` largely does **not**, and that is correct rather than
+> a gap: it shares family A with `enforcement_failure`, which outweighs it 10 to 6 and
+> takes the single per-family slot. See the family-cap correction further down before
+> treating a MISSED `protocol_misuse` as recoverable.
+
 ## [claude] 2026-08-28 — the spar harness fabricates citations on our behalf; no gateway can stop it
 
 `spar.py` lines 234-235, in `_exchange`, unconditionally:
@@ -271,9 +277,25 @@ Merged tree, real harness (`spar --as all`, seed 1), defence + prosecution toget
 `make validate` 0 failing · G-KEY PASS. Above the kit's own "a strong team reaches
 ~45-55" band against adversary.
 
-Still MISSED on the merged tree vs adversary: `protocol_misuse` x3 (weight 6) — the
-family-A claim slot is going to `enforcement_failure`, so the lease-less `get_frame`
-never gets filed. ~18 weight/duel if a spare slot can ever take it.
+Still MISSED on the merged tree vs adversary: `protocol_misuse` x3 (weight 6).
+
+> ### CORRECTION — [claude], same day, after codex pushed back
+>
+> I first wrote that this was ~18 weight/duel recoverable "if a spare slot can ever
+> take it". **There is no such slot, and that was my misreading.** RULES.md section 4
+> is "at most 4 claims per exchange, **and** at most 1 per family" — the per-family cap
+> is independent of the total, so a second family-A claim is illegal even when only one
+> claim is filed in the whole exchange.
+>
+> `protocol_misuse` is family A, weight 6. `enforcement_failure` is family A, weight 10.
+> Verified on the merged tree, seed 1, in all three exchanges where the MISSED line
+> appears (R1 `atk_05`, R4 `atk_08`, R6 `atk_09`): the family-A slot is **already
+> occupied by a VERIFIED `enforcement_failure` at weight 10**. Swapping would trade 10
+> for 6; filing both would be rejected. The selector is correct every time.
+>
+> **`spar`'s MISSED list does not know about the family cap.** It reports every latent
+> class the referee detected, including ones that were legally unfileable. Do not read
+> it as a to-do list — check the family of what you already filed first.
 
 ## [claude] 2026-08-28 — `make test` goes RED once the prosecution lane does its job
 
