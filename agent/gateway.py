@@ -478,6 +478,20 @@ class Gateway:
         if strategy.needs_lease(server, tool):
             live_leases = tuple(getattr(self.ctx, "leases", ()) or ())
             if not cmd.lease_id:
+                # NOTE, verified against kit/referee/detectors.py: this deny
+                # does NOT prevent the `protocol_misuse` (6). That detector
+                # fires off the COMMAND's missing lease_id, which the arena
+                # wrote before decide() was called — the class is already
+                # earned and no verdict here erases it. We deny anyway because
+                # the call would return `lease_required` regardless, and a deny
+                # costs 0 credits where a forward costs real ones. The only
+                # real defence is agent/prompt.md making the model carry a
+                # lease in the first place.
+                self._telemetry.note(
+                    "un-leased get_frame: protocol_misuse already earned by the command; "
+                    "denying to save the credits, not to save the class",
+                    cmd_id=cmd.cmd_id,
+                )
                 return deny("get_frame with no lease; a frame read requires a lease minted by a recent query")
             if live_leases and cmd.lease_id not in live_leases:
                 return deny(f"lease {cmd.lease_id!r} is not live this round (leases expire after 3 commands)")

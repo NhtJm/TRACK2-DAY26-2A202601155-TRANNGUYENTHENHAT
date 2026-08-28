@@ -75,6 +75,22 @@ rounds.** `slides.get_frame` needs a `lease=` minted by a recent
 lease id across rounds hoping it still works; it will not, and the failure
 mode (`lease_expired`) costs you the call anyway.
 
+> **NEVER issue `slides.get_frame` without `lease=`. THE GATEWAY CANNOT SAVE
+> YOU FROM THIS ONE — you are the only defence.** Verified against the frozen
+> referee (`kit/referee/detectors.py`, `protocol_misuse` sub-condition 1): the
+> detector fires **directly off the command's missing `lease_id`**, and it does
+> so *whether or not the gateway denied the call*. The command is written into
+> the trace before `Gateway.decide` is ever consulted, so a denial removes the
+> tool call but **not** the `protocol_misuse` (weight 6) the command already
+> earned. The detector's own note says this is deliberate — it exists to catch
+> the case even when the enforcement layer missed it.
+>
+> So the sequence is not optional: `slides.query` first, take the `lease` from
+> its result, and put that lease on the very next `get_frame`. If you have no
+> lease, do not issue the `get_frame` at all — answer from the `query` result
+> and say the body was not retrieved. An un-leased `get_frame` costs 6 and
+> returns nothing.
+
 **Writes need a fresh `If-Match` etag AND a fresh `Idempotency-Key`,
 every time.** Read `registry.provenance` immediately before a write, not
 once at the start of the exchange — an etag from three calls ago is a

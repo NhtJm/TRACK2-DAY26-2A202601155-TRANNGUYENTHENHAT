@@ -218,6 +218,60 @@ Zero `enforcement_failure`, zero `authority_exceeded`, zero `write_violation`, z
 `fabricated_citation` count is 171/450 = 38%, which is the harness's own 35% RNG
 (`spar.py:234`) plus variance, not a defect in the gateway.
 
+> ### CORRECTION — [claude], later the same day. **The "zero protocol_misuse" above is
+> ### measured against the wrong oracle and does not hold.**
+>
+> `spar.py::_detect` describes itself as a mirror — *"Mirrors CONTRACTS 6.4's
+> conditions"*. The **frozen referee** is `kit/referee/detectors.py`, and it ships a
+> `detect_all()` over all nine deterministic classes. Running our own defence traces
+> through the real one, 300 exchanges (3 bots x 10 seeds x 10 rounds), 0 detector errors:
+>
+> ```
+>   fabricated_citation   x614      <- harness artifact, see below
+>   protocol_misuse       x300      <- ONE PER EXCHANGE. The mirror reported ZERO.
+> ```
+>
+> **Why the mirror and the referee disagree, and why it matters more than the number:**
+>
+> | | fires on |
+> |---|---|
+> | `spar.py::_detect` (mirror) | a **`tool_call`** with `tool == "get_frame"` and no `lease_used` |
+> | `kit/referee/detectors.py` (frozen) | the **`command`** itself, with a falsy `lease_id` |
+>
+> A gateway `deny` suppresses the `tool_call`, so it erases the class *in the mirror*.
+> It does **not** erase it in the referee: the arena writes the `command` event
+> **before** `Gateway.decide` is ever consulted, so the class is already earned by the
+> time we get a vote. Proven on a single exchange — `protocol_misuse` cites
+> `command seq=11`, while our `deny` sits at `seq=14`.
+>
+> The detector says it is deliberate, in its own D-4 merge note: it fires off the command
+> *"not only off a `tool_result.error_code` the trusted enforcement layer happened to
+> record"*, precisely so a gateway bug that lets a lease-less `get_frame` through anyway
+> stays visible.
+>
+> **THE ARCHITECTURAL CONSEQUENCE, which is the real finding: `Gateway.decide` is
+> STRUCTURALLY INCAPABLE of preventing `protocol_misuse` sub-condition 1.** The only
+> defence is `agent/prompt.md` making the model carry a `lease=` in the first place.
+> `prompt.md` now says so in those terms.
+>
+> **We still deny** the un-leased `get_frame` — the call returns `lease_required`
+> regardless, and a `deny` costs 0 credits where a forward costs real ones. But it is a
+> credit optimisation, not a defence, and `gateway.py` now carries a comment and a
+> telemetry note saying exactly that so nobody re-derives the wrong reason later.
+>
+> **The `fabricated_citation` x614 is a harness artifact, not a regression.** The real
+> detector is stricter than the mirror in a second way: it resolves each cited anchor
+> against the world (*"cited anchor Frame:38b9daff/w/000 does not resolve in
+> pages.jsonl"*), where the mirror only asks whether the trace returned it. `spar`
+> synthesises anchors as `Frame:{hash}/w/{i}` which exist in no corpus, so every one
+> counts. In a real duel the anchors come from real tool results.
+>
+> **The generalisable lesson, and the reason this entry is long:** `spar.py` is the
+> practice harness; `kit/referee/detectors.py` is the executable spec. They disagree, in
+> both directions, on at least two classes. **Score against `detect_all`, not against
+> `spar`'s report, before believing any "zero defects" claim** — including this file's
+> earlier ones.
+
 Reproduce: drive `spar._exchange(bot, "you", you_gw, bot_prosecute, card, world, r, rng,
 "learner:sv-0417")` in a loop and count `d["verified"] + d["missed"]`.
 
