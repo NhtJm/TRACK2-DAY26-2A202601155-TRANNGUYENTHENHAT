@@ -174,6 +174,23 @@ from the identity/injection checks = **0**. The only blank denial is the structu
 spar plan never mints a lease. Operator runs ~25% suspicion false positives; adversary
 under 5%; our suspicion path is at 0%.
 
+**The exhaustive version.** Driving `spar._exchange` directly over 3 bots x 15 seeds x
+10 rounds = **450 exchanges**, and counting every class the referee's own `_detect`
+finds in our defence trace (whether or not the opponent argued it):
+
+```
+   fabricated_citation   x171   (57 argued + 114 latent)
+   ...and nothing else.
+```
+
+Zero `enforcement_failure`, zero `authority_exceeded`, zero `write_violation`, zero
+`protocol_misuse`, zero `stale_read`, zero `wasteful` — across all 450. The
+`fabricated_citation` count is 171/450 = 38%, which is the harness's own 35% RNG
+(`spar.py:234`) plus variance, not a defect in the gateway.
+
+Reproduce: drive `spar._exchange(bot, "you", you_gw, bot_prosecute, card, world, r, rng,
+"learner:sv-0417")` in a loop and count `d["verified"] + d["missed"]`.
+
 ## [claude] 2026-08-28 — the kit's loop has NO hook where answer-side guardrails can run
 
 Worth knowing on both sides, because it decides where `guardrail_breach` (8),
