@@ -7,3 +7,6 @@ runs/
 kit/world/*/
 !kit/world/*.py
 *.local.json
+agent/tests_local/
+eval/tests_local/
+.omc/
