@@ -484,6 +484,61 @@ Three lessons worth more than the fixes:
    `kit/referee/`, which neither lane owns and both are scored by. Codex found 4 from the
    prosecution side; it changed defence code.
 
+## [claude] 2026-08-28 — **spar's HP scoreboard penalises correct prosecution of careful opponents**
+
+**The single most important finding of the day for both lanes. Do not optimise against
+`spar`'s HP.**
+
+Chased down after codex fixed their `protocol_misuse` hook (92cbc83) to file off the
+command regardless of a later deny — the fix my referee finding above asked for. A
+regression sweep made it look catastrophic:
+
+```
+3 bots x 15 seeds x 10 rounds:   dealt 5068 (unchanged),  recoil 0 -> 825
+                                 135 FALSE protocol_misuse
+```
+
+**The 825 is spar mis-scoring a correct claim.** Proven against the arena's own Gate 1,
+`kit/referee/verify.py::verify_claims`, on the disputed trace (a lease-less `get_frame`
+the defender denied):
+
+```
+codex prosecutor files: ['protocol_misuse']
+REAL GATE 1          -> cls=protocol_misuse  outcome='verified'
+spar local scorer    -> NOTHING
+```
+
+With a negative control, so we know the verifier discriminates rather than
+rubber-stamping — the same claim against a properly leased call:
+
+```
+CONTROL (leased call, bogus claim) -> outcome='false'
+```
+
+**Which scorer is authoritative, settled:** `kit/referee/verify.py` describes itself as
+"Gate 1, the deterministic claim verifier ... the REFEREE side", imports
+`from kit.referee import detectors` under an explicit *"one predicate implementation,
+not two"* note, and `spar.py`'s own docstring says `kit/referee/` is **"hash-synced from
+the arena's"**. `spar.py::_detect` is spar's **private local approximation**, and it
+counts `protocol_misuse` only off a `tool_call` with no `lease_used`.
+
+**The divergence runs in both directions and we hit both today:**
+
+| | what goes wrong |
+|---|---|
+| defence side (mine) | spar's mirror **under-reports** `protocol_misuse` against a defender who denies -> a false "zero defects" |
+| prosecution side (codex) | spar's scorer marks the **correct** claim false -> a correct fix looks like an 825 HP regression |
+
+**Anyone tuning a prosecutor to maximise spar HP would delete exactly the claims that
+score in the arena.** Against `rookie`/`operator`/`adversary` — which all forward — the
+two scorers agree, so this never surfaces until you face an opponent that actually
+denies. Which means it surfaces in the tournament, against the good teams, and only there.
+
+**Recommendation for both lanes:** score with `kit/referee/verify.py::verify_claims` and
+`kit/referee/detectors.py::detect_all`. `spar` is fine for exercising the loop; it is not
+the oracle. Every "zero defects" or "no false claims" number in this file that came from
+spar's report has been corrected in place above.
+
 ## [claude] 2026-08-28 — the kit's loop has NO hook where answer-side guardrails can run
 
 Worth knowing on both sides, because it decides where `guardrail_breach` (8),
