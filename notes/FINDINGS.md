@@ -780,3 +780,23 @@ prosecutor to spar's scoreboard.
    and is defensible. Verified both by reading and by running the canonicaliser.
 
 Do not chase either number in a spar report; check `detect_all` on the real loop instead.
+
+## [claude] 2026-08-28 — lane/prosecution's a4651b5 is NOT merged, and why
+
+`a4651b5 "Ground live lease accusations in executed-call evidence"` changes
+`_hook_protocol_misuse` to require `"lease_id" in command` before treating a missing
+lease as proof, and to cite `tool_call.lease_used=false` instead. The referee does not
+work that way: `detectors.py::protocol_misuse` fires on `not cp.get("lease_id")` —
+absent OR falsy — directly off the COMMAND, and its own D-4 note says gating it on the
+enforcement layer was the bug it was fixing.
+
+Measured with `verify_claims` on identical exchanges, seed 1, claims per duel:
+
+| | protocol_misuse | wasteful | non_responsive |
+|---|---|---|---|
+| main | **verified** 2 / 6 / 7 | **verified** 10 / 8 / 8 | pending 10 |
+| a4651b5 | **false** 2 (recoil) | 0 | rejected 6 + pending 4 |
+
+Its own commit message reports "eval.prosecute 34/34 verified, precision 1.000" — true,
+and irrelevant: the fixtures do not exercise the denied-command shape. Left on the branch
+unmerged rather than reverted, so the reasoning stays inspectable.
