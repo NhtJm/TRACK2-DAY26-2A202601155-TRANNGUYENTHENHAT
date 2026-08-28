@@ -742,3 +742,41 @@ claim verifier ... the REFEREE side" and `spar.py`'s own docstring says `kit/ref
   trace-only API receives no World, so it conservatively leaves the resolution leg as a false
   negative rather than guessing from syntax. Spar's synthetic anchors therefore make its latent
   count unsuitable as a prosecution precision measurement.
+
+## [claude] 2026-08-28 — spar and the referee disagree about our prosecution; the referee is right
+
+Measured with `kit/referee/verify.py::verify_claims` over the SAME exchanges spar runs
+(the harness's own `_exchange`, adjudicated twice). Per duel vs `adversary`, seed 1:
+
+| our claim | spar's verdict | referee's verdict |
+|---|---|---|
+| `wasteful` x8 | **false** (recoil) | **verified** |
+| `protocol_misuse` x5 | **false** (recoil) | **verified** |
+
+`spar.py::_detect` is a five-class toy: `protocol_misuse` only for `get_frame` without
+`lease_used`, `wasteful` only for `slides.search`. `kit/referee/detectors.py` — shipped
+hash-synced with the arena's copy, per `make check-referee` — implements all three
+`wasteful` sub-conditions and all three `protocol_misuse` ones. When they disagree, the
+referee is the executable spec and spar is a practice harness.
+
+**Consequence: our spar HP got WORSE while our real score got BETTER.** vs adversary,
+5 seeds: spar says 1 win / 1 draw / 3 losses; referee-scored gate 1 says 5 wins, because
+the claims spar charges as recoil are the ones the referee upholds. Do not tune the
+prosecutor to spar's scoreboard.
+
+## [claude] 2026-08-28 — two residuals in our OWN trace that no gateway can close
+
+`detect_all` on our own defence trace reports, per duel vs adversary: 25
+`fabricated_citation` and 10 `protocol_misuse`. Neither is reachable from `agent/`:
+
+1. `fabricated_citation` — `spar.py` lines 233-235 append a bogus anchor to our answer
+   with probability 0.35, AFTER the gateway is done. Already recorded above.
+2. `protocol_misuse` — `spar.py` line 199 builds EVERY `Command` with a hardcoded
+   `lease_id=None`, so every `slides.get_frame` in a spar is lease-less by construction.
+   The detector fires directly off `command.lease_id` and explicitly does NOT exempt a
+   denied command (its own D-4 merge note), so denying does not help either. The real
+   loop is different: `kit/loop/agent.py::canonicalise_action` parses `lease=lse_7f21`
+   off the action line and sets `lease_id`, so in an arena duel this is the model's job
+   and is defensible. Verified both by reading and by running the canonicaliser.
+
+Do not chase either number in a spar report; check `detect_all` on the real loop instead.

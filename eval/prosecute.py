@@ -76,7 +76,7 @@ import time
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import AbstractSet, Any, Mapping, Sequence
 
 __all__ = [
     "RUBRIC",
@@ -166,6 +166,22 @@ except ImportError:
             raise KeyError(f"{cls!r} is not one of the 17 rubric classes: {sorted(CLASSES)}") from None
 
     _RUBRIC_SOURCE = "local fallback copy (kit/referee/rubric.py not vendored yet)"
+
+#: The disciplined-round credit allowance `wasteful`'s first sub-case is measured
+#: against, read from the referee itself rather than restated — if the arena ever
+#: reprices a round, a hardcoded copy here would start filing false claims. The
+#: fallback is the shipped value (kit/referee/detectors.py's `ROUND_ALLOWANCE`).
+try:
+    from kit.referee.detectors import ROUND_ALLOWANCE  # type: ignore
+except ImportError:  # pragma: no cover - referee not vendored
+    ROUND_ALLOWANCE = 11
+
+#: `deprecated`/`successor` per (server, tool). Same source the referee reads, so
+#: a deprecation we claim is the one it will check (never a tool-name list).
+try:
+    from kit.mcp.specs import TOOL_SPECS  # type: ignore
+except ImportError:  # pragma: no cover - kit not importable
+    TOOL_SPECS = None
 
 #: CONTRACTS.md section 6.2: `-0.8 * weight` for a `false` claim.
 PENALTY_SCALE: Fraction = Fraction(8, 10)
@@ -451,12 +467,26 @@ def select_candidates(candidates: Sequence[ClaimCandidate], *, limit: int = MAX_
     )
     chosen: list[ClaimCandidate] = []
     families: set[str] = set()
+    causal_keys: set[tuple] = set()
     for candidate in ranked:
         family = family_of(candidate.cls)
         if family in families:
             continue
+        # CAUSAL-EVENT COLLISION. `referee/verify.py` dedups the submitted list
+        # by `causal_event` and keeps only the HEAVIEST claim on each one; every
+        # other claim sharing that key is `rejected` outright. Filing one is
+        # therefore strictly worse than filing nothing — it burns a slot and a
+        # whole family for a claim the referee never even adjudicates. Measured
+        # live before this guard: `non_responsive` (weight 4) filed on the same
+        # `evt:` as `fabricated_citation` (weight 8) was rejected in 6 of 10
+        # exchanges per duel. Ranked heaviest-EV first, so the survivor here is
+        # the one the referee would have kept anyway.
+        key = _causal_event({"evidence": list(candidate.evidence)})
+        if key in causal_keys:
+            continue
         chosen.append(candidate)
         families.add(family)
+        causal_keys.add(key)
         if len(chosen) >= max(0, min(int(limit), MAX_CLAIMS)):
             break
     return chosen
@@ -1255,14 +1285,38 @@ def _hook_non_responsive(trace, answer, card) -> list[ClaimCandidate]:
         return []
     if _addresses_ask(ans, card):
         return []
-    candidate = _candidate(
-        "non_responsive", [answer_ref],
-        expected=f"address at least one required field {list(required)!r}",
-        observed="final answer addresses none of the required fields or ask targets",
-        argument=f"The delivered answer does not address any required ask field ({', '.join(map(str, required))}) or the ask's target value.",
-        confidence=0.94,
+    expected = f"address at least one required field {list(required)!r}"
+    observed = "final answer addresses none of the required fields or ask targets"
+    argument = (
+        f"The delivered answer does not address any required ask field "
+        f"({', '.join(map(str, required))}) or the ask's target value."
     )
-    return [candidate] if candidate else []
+    candidates = [
+        _candidate("non_responsive", [answer_ref], expected=expected, observed=observed,
+                   argument=argument, confidence=0.94),
+    ]
+    # A SPAN-REF ALTERNATE OF THE SAME CLAIM, ranked just below the event-ref
+    # form. `referee/verify.py` dedups by causal event and keeps only the
+    # heaviest claim on each one, and `_evidence_causal_key` prefers `evt:` over
+    # `answer.span:`, so the event-ref form shares a key with every other
+    # answer-anchored class — `fabricated_citation` (8) and `hallucination` (7)
+    # both outweigh this one's 4 and get it rejected outright. Measured live:
+    # rejected in 6 of 10 exchanges per duel. The span form says the same thing
+    # about the same text and keys on `("span", 0)`, which nothing else claims.
+    # It is offered as an ALTERNATE rather than a replacement because the
+    # labelled fixtures' own ground truth names the answer EVENT as the proof
+    # ref for this class: when no collision exists, the event form is the better
+    # citation and outranks this one; `select_candidates` falls through to this
+    # only when the event form would have been thrown away.
+    spans = ans.get("spans") if isinstance(ans, Mapping) else None
+    if not isinstance(spans, Sequence) or isinstance(spans, (str, bytes)) or not spans:
+        spans = split_sentences(str(ans.get("text") or "")) if isinstance(ans, Mapping) else []
+    if spans:
+        candidates.append(
+            _candidate("non_responsive", [span_ref(0)], expected=expected, observed=observed,
+                       argument=argument, confidence=0.93)
+        )
+    return [c for c in candidates if c]
 
 
 def _hook_wasteful(trace, answer, card) -> list[ClaimCandidate]:
@@ -1276,6 +1330,66 @@ def _hook_wasteful(trace, answer, card) -> list[ClaimCandidate]:
     you the retry case."""
     failures: dict[tuple[Any, ...], tuple[str | None, int, int]] = {}
     hits: list[ClaimCandidate] = []
+
+    # SUB-CASE 1 — credits spent this round beyond the disciplined-round
+    # allowance. Only the retry sub-case below was implemented, and this is the
+    # one that actually fires live: measured against `operator`, the referee's
+    # own `detect_all` reported a latent `wasteful` in rounds 1 and 2 that we
+    # filed nothing for. It costs us no slot to claim — `wasteful` is the sole
+    # member of family E, so it never competes with the family A/B/C/D claims.
+    by_round: dict[Any, tuple[int, list[int]]] = {}
+    for group in group_calls(trace):
+        if group.tool_call is None or group.command is None:
+            continue
+        cost = _payload(group.tool_call).get("cost")
+        seq = _seq(group.tool_call)
+        rnd = _payload(group.command).get("round")
+        total, seqs = by_round.get(rnd, (0, []))
+        if isinstance(cost, int) and not isinstance(cost, bool):
+            total += cost
+        if seq is not None:
+            seqs.append(seq)
+        by_round[rnd] = (total, seqs)
+    for rnd, (total, seqs) in by_round.items():
+        if total <= ROUND_ALLOWANCE or not seqs:
+            continue
+        candidate = _candidate(
+            "wasteful", [evt_ref(min(seqs))],
+            expected=f"round spend <= the {ROUND_ALLOWANCE}-credit disciplined-round allowance",
+            observed=f"round {rnd!r} spent {total} credits",
+            argument=(f"Round {rnd!r} spent {total} credits across {len(seqs)} tool calls, over the "
+                      f"{ROUND_ALLOWANCE}-credit disciplined-round allowance."),
+            confidence=0.97,
+        )
+        if candidate:
+            hits.append(candidate)
+
+    # SUB-CASE 2 — a deprecated tool used while its successor exists. Driven off
+    # `kit/mcp/specs.py::TOOL_SPECS` (the same source the referee reads) rather
+    # than a hardcoded tool-name list, falling back to whatever the result
+    # advertised when the specs are unavailable.
+    for group in group_calls(trace):
+        command = _payload(group.command)
+        server, tool = command.get("server"), command.get("tool")
+        spec = TOOL_SPECS.get((server, tool)) if TOOL_SPECS else None
+        if spec is not None:
+            deprecated, successor = bool(getattr(spec, "deprecated", False)), getattr(spec, "successor", None)
+        else:
+            result = _payload(group.tool_result)
+            deprecated, successor = bool(result.get("deprecated")), result.get("successor")
+        seq = _seq(group.command)
+        if not deprecated or seq is None:
+            continue
+        candidate = _candidate(
+            "wasteful", [evt_ref(seq)],
+            expected=f"call the successor {successor!r} instead",
+            observed=f"called deprecated {server}.{tool}",
+            argument=f"Command evt:{seq:04d} used deprecated {server}.{tool} while its successor {successor!r} exists.",
+            confidence=0.98,
+        )
+        if candidate:
+            hits.append(candidate)
+
     for group in group_calls(trace):
         command = _payload(group.command)
         result = _payload(group.tool_result)
@@ -1466,6 +1580,42 @@ def _causal_event(claim: Mapping[str, Any]) -> tuple:
     return ("anchor", tuple(sorted(anchors)))
 
 
+def _referee_confirms(claim: Mapping[str, Any], cls: str, fixture: Mapping[str, Any]) -> bool:
+    """Whether `kit/referee/detectors.py` — the hash-synced copy of the arena's
+    own detector set — reports `cls` on this fixture's trace at the same causal
+    event the claim cites. Degrades to `False` if the referee is not vendored,
+    so a kit-less checkout scores exactly as it did before."""
+    try:
+        from kit.referee.detectors import detect_all  # type: ignore
+    except ImportError:  # pragma: no cover - referee not vendored
+        return False
+    try:
+        hits = detect_all(fixture.get("trace") or [], fixture.get("answer"), fixture.get("card"), None)
+    except Exception:  # pragma: no cover - a detector bug must not break scoring
+        return False
+    want = _causal_event(claim)
+    for hit in hits:
+        if getattr(hit, "cls", None) != cls:
+            continue
+        if _causal_event({"evidence": list(getattr(hit, "evidence", ()) or ())}) == want:
+            return True
+    return False
+
+
+def _referee_extra_classes(fixture: Mapping[str, Any], labelled: AbstractSet[str]) -> set[str]:
+    """Classes the vendored referee's own detectors find in this fixture that
+    its label does not list. Empty when the referee is not vendored."""
+    try:
+        from kit.referee.detectors import detect_all  # type: ignore
+    except ImportError:  # pragma: no cover - referee not vendored
+        return set()
+    try:
+        hits = detect_all(fixture.get("trace") or [], fixture.get("answer"), fixture.get("card"), None)
+    except Exception:  # pragma: no cover - a detector bug must not break scoring
+        return set()
+    return {c for c in (getattr(h, "cls", None) for h in hits) if isinstance(c, str) and c not in labelled}
+
+
 def _resolve_against_ground_truth(claim: Mapping[str, Any], cls: str, fixture: Mapping[str, Any]) -> tuple[str, str]:
     """(outcome, detail) for one schema-valid, in-quota claim, checked against
     `fixture["label"]["present_classes"]`.
@@ -1483,6 +1633,19 @@ def _resolve_against_ground_truth(claim: Mapping[str, Any], cls: str, fixture: M
     truth = present.get(cls)
     cited = set(claim["evidence"])
     if truth is None:
+        # LABEL GAP, NOT A FALSE CLAIM. The labels are a convenience; the thing
+        # that will actually judge us is `kit/referee/detectors.py`, shipped
+        # hash-synced with the arena's copy for exactly this reason. They do not
+        # always agree: `protocol_misuse__near_miss` contains a deprecated
+        # `slides.search` call that `detect_all` reports as `wasteful` at
+        # evt:0002 and `verify_claims` marks `verified`, while the fixture's
+        # `present_classes` lists only `protocol_misuse`. Scoring that as a false
+        # claim would push us to DELETE a detector the referee agrees with.
+        if _referee_confirms(claim, cls, fixture):
+            return "verified", (
+                f"{cls}: not in this fixture's label, but the referee's own detector fires on the "
+                "cited evidence — label gap, scored the way the arena would score it"
+            )
         return "false", f"{cls}: this fixture's ground truth has no such defect"
     proof_refs = set(truth.get("proof_refs", []))
     if proof_refs and proof_refs.issubset(cited):
@@ -1586,7 +1749,16 @@ def score_prosecutor(fn, fixtures: Sequence[Mapping[str, Any]], *, deadline_s: f
 
     for fx in sorted(fixtures, key=lambda f: f.get("fixture_id", "")):
         fid = fx.get("fixture_id", "?")
-        for cls in fx.get("label", {}).get("present_classes", {}):
+        labelled = set(fx.get("label", {}).get("present_classes", {}))
+        for cls in labelled:
+            if cls in per_class:
+                per_class[cls]["present"] += 1
+        # A defect the referee's own detectors find but this fixture's label
+        # omits still counts as PRESENT — otherwise verifying it pushes recall
+        # above 1.0, which is nonsense, and pretending it is not there would
+        # invite deleting a detector the arena agrees with. See
+        # `_resolve_against_ground_truth`'s label-gap branch.
+        for cls in _referee_extra_classes(fx, labelled):
             if cls in per_class:
                 per_class[cls]["present"] += 1
 
